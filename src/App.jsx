@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Home, Dumbbell, User, Plus, Check, Flame, Droplets, Moon, BookOpen, Library, Power, ListChecks, Link2, Paperclip, Undo2, Redo2, Highlighter, Footprints, Play, ChevronLeft, Users, ClipboardList, Trash2, Calendar, ChevronRight } from "lucide-react";
+import { CLOUD, hasAuth, signIn, signOut, trainerPoll, trainerInit, trainerSave, trainerLogsPatch, clientGet, clientPatch, diff, mergePatch, secret } from "./cloud.js";
 
 const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const today = () => fmt(new Date());
@@ -549,11 +550,12 @@ function Trainer({ db, set }) {
   const [form, setForm] = useState(null);
   const [plan, setPlan] = useState({ clientId: db.clients[0]?.id || "", date: today(), weeks: 4, wk: {} });
   const [ex, setEx] = useState({ name: "", url: "", comment: "", w: "", libId: "" });
+  useEffect(() => { if (db.clients[0] && !db.clients.some((c) => c.id === plan.clientId)) setPlan((p) => ({ ...p, clientId: db.clients[0].id })); }, [db.clients.length]);
   const [arm, setArm] = useState(null), [note, setNote] = useState(""), [tplName, setTplName] = useState(""), [edT, setEdT] = useState(null);
 
   const addClient = () => {
     if (!form.name) return;
-    set((d) => { d.clients.push({ id: uid(), token: uid() + uid(), name: form.name, age: +form.age || 0, inbody: { weight: +form.weight || 0, muscle: +form.muscle || 0, fat: +form.fat || 0, bmi: +form.bmi || 0 } }); });
+    set((d) => { d.clients.push({ id: uid(), token: secret(), name: form.name, age: +form.age || 0, inbody: { weight: +form.weight || 0, muscle: +form.muscle || 0, fat: +form.fat || 0, bmi: +form.bmi || 0 } }); });
     setForm(null);
   };
   const [dow, setDow] = useState(1);
@@ -1746,15 +1748,9 @@ function AdminLogin({ onOk }) {
   );
 }
 
-export default function App() {
-  const [db, setDb] = useLS("fitcoach-db", seed);
-  const set = (fn) => setDb((d) => { const c = structuredClone(d); fn(c); return c; });
-  const [hash, setHash] = useState(window.location.hash);
-  useEffect(() => { const f = () => setHash(window.location.hash); window.addEventListener("hashchange", f); return () => window.removeEventListener("hashchange", f); }, []);
-  const adminPage = hash === "#admin"; // тренер заходит по адресу вашсайт/#admin, клиентам ссылка не показывается
-  const isAdmin = DEV_SWITCHER || db.session.admin === true;
+function useSeeding(db, set, ready) {
   useEffect(() => {
-    if (db.tplSeeded) return;
+    if (!ready || db.tplSeeded) return;
     set((d) => {
       d.library ||= []; d.templates ||= [];
       const byName = new Map(d.library.map((x) => [x.name.trim().toLowerCase(), x.id]));
@@ -1767,11 +1763,227 @@ export default function App() {
       });
       d.tplSeeded = true;
     });
-  }, []);
+  }, [ready]);
   useEffect(() => {
-    if (!ARTICLES.some((a) => !(db.memosSeeded || []).includes(a.id))) return;
+    if (!ready || !ARTICLES.some((a) => !(db.memosSeeded || []).includes(a.id))) return;
     set((d) => { d.memos = (d.memos || []).filter((m) => !(m.id === "m1" && (m.body || "").startsWith("Здесь будет"))); ARTICLES.forEach((a) => { if (!(d.memosSeeded ||= []).includes(a.id)) { d.memosSeeded.push(a.id); if (!d.memos.some((m) => m.id === a.id)) d.memos.push(a); } }); });
+  }, [ready]);
+}
+
+/* ---------- Облако (Supabase) ---------- */
+function useStore(adapter) {
+  const [db, setDb] = useState(null), [err, setErr] = useState(null), [offline, setOffline] = useState(false);
+  const R = useRef({ db: null, pending: null, busy: false, pulling: false, seq: 0, t: null });
+  const flushRef = useRef();
+  flushRef.current = async () => {
+    const r = R.current; clearTimeout(r.t);
+    if (r.busy || !r.pending) return;
+    r.busy = true; const p = r.pending; r.pending = null; let ok = true;
+    try { await adapter.push(p); setOffline(false); }
+    catch (e) {
+      ok = false; r.pending = r.pending ? adapter.merge(p, r.pending) : p;
+      if (e.code === "auth" || e.code === "forbidden") setErr(e); else { setOffline(true); r.t = setTimeout(() => flushRef.current(), 5000); }
+    }
+    r.busy = false;
+    if (ok && r.pending) r.t = setTimeout(() => flushRef.current(), 400);
+  };
+  const pull = useCallback(async (first) => {
+    const r = R.current;
+    if (r.pulling || (!first && (r.busy || r.pending))) return;
+    r.pulling = true; const seq = r.seq;
+    try {
+      const next = await adapter.fetch(first ? null : r.db);
+      if (next && r.seq === seq && !r.busy && !r.pending) { r.db = next; setDb(next); }
+      setErr(null); setOffline(false);
+    } catch (e) {
+      if (first || e.code === "auth" || e.code === "forbidden" || e.code === "not_found") setErr(e); else setOffline(true);
+    }
+    r.pulling = false;
+  }, [adapter]);
+  useEffect(() => {
+    pull(true);
+    const iv = setInterval(() => pull(false), 15000);
+    const vis = () => { if (document.visibilityState === "visible") pull(false); else flushRef.current(); };
+    document.addEventListener("visibilitychange", vis);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", vis); };
+  }, [pull]);
+  const set = useCallback((fn) => {
+    const r = R.current; if (!r.db) return;
+    const prev = r.db, next = structuredClone(prev); fn(next);
+    r.db = next; r.seq++; setDb(next);
+    const p = adapter.pend(prev, next, r.pending);
+    if (p !== r.pending) { r.pending = p; clearTimeout(r.t); r.t = setTimeout(() => flushRef.current(), 500); }
+  }, [adapter]);
+  const retry = () => { setErr(null); R.current.pulling = false; pull(true); };
+  return { db, set, err, offline, retry };
+}
+
+const normLogs = (l) => ({ days: {}, done: {}, sets: {}, ...(l || {}) });
+
+function trainerAdapter() {
+  let ver = null, main = null, logsStr = "";
+  const build = (logs) => ({ ...main, logs: Object.fromEntries(Object.entries(logs).map(([k, v]) => [k, normLogs(v)])), session: {} });
+  return {
+    async fetch(cur) {
+      let res = await trainerPoll(ver);
+      if (res.empty) { await trainerInit({ clients: [], plans: [], library: [], memos: [], templates: [], weights: {} }); ver = null; res = await trainerPoll(null); }
+      const ls = JSON.stringify(res.logs);
+      if (cur && res.ver === ver && ls === logsStr) return null;
+      if (res.data) main = res.data;
+      ver = res.ver; logsStr = ls;
+      return build(res.logs);
+    },
+    pend(prev, next, p) {
+      let main2 = null, logs = null;
+      for (const k of Object.keys(next)) { if (k === "logs" || k === "session") continue; if (JSON.stringify(prev[k]) !== JSON.stringify(next[k])) (main2 ||= {})[k] = next[k]; }
+      const cids = new Set([...Object.keys(prev.logs || {}), ...Object.keys(next.logs || {})]);
+      for (const c of cids) { const d = diff(prev.logs?.[c] || {}, next.logs?.[c] || {}); if (d) (logs ||= {})[c] = d; }
+      if (!main2 && !logs) return p;
+      const out = { main: { ...(p?.main || {}), ...(main2 || {}) }, logs: { ...(p?.logs || {}) } };
+      if (logs) for (const c of Object.keys(logs)) out.logs[c] = out.logs[c] ? mergePatch(out.logs[c], logs[c]) : logs[c];
+      return out;
+    },
+    merge(a, b) {
+      const out = { main: { ...a.main, ...b.main }, logs: { ...a.logs } };
+      for (const c of Object.keys(b.logs)) out.logs[c] = out.logs[c] ? mergePatch(out.logs[c], b.logs[c]) : b.logs[c];
+      return out;
+    },
+    async push(p) {
+      if (Object.keys(p.main).length) { ver = await trainerSave(p.main); main = { ...main, ...p.main }; }
+      for (const c of Object.keys(p.logs)) await trainerLogsPatch(c, p.logs[c]);
+    },
+  };
+}
+
+function clientAdapter(token) {
+  let ver = null, main = null, cid = null, sig = "";
+  return {
+    async fetch(cur) {
+      const res = await clientGet(token, main ? ver : null);
+      if (!res || res.error) throw Object.assign(new Error("not_found"), { code: "not_found" });
+      cid = res.client.id;
+      const s2 = res.ver + "|" + JSON.stringify(res.logs) + "|" + (res.client.active === false);
+      if (cur && s2 === sig) return null;
+      sig = s2;
+      if (res.plans !== undefined) { main = { plans: res.plans, library: res.library, memos: res.memos, weights: { [cid]: res.weights } }; ver = res.ver; }
+      else if (res.blocked) { main = { plans: [], library: [], memos: [], weights: {} }; ver = res.ver; }
+      return { clients: [res.client], ...main, templates: [], logs: { [cid]: normLogs(res.logs) }, session: {} };
+    },
+    pend(prev, next, p) { const d = diff(prev.logs?.[cid] || {}, next.logs?.[cid] || {}); return d ? (p ? mergePatch(p, d) : d) : p; },
+    merge: (a, b) => mergePatch(a, b),
+    push: (p) => clientPatch(token, p),
+  };
+}
+
+function Loading({ err, retry, text = "Загружаю…" }) {
+  if (err && err.code === "forbidden") return <div className="mx-auto max-w-sm space-y-3 pt-16 text-center"><p className="text-xl font-bold">Нет доступа</p><p className="text-neutral-400">Этот аккаунт не является аккаунтом тренера.</p></div>;
+  if (err) return (
+    <div className="mx-auto max-w-sm space-y-4 pt-16 text-center">
+      <p className="text-xl font-bold">Нет связи с сервером</p>
+      <p className="text-neutral-400">Проверь интернет и попробуй ещё раз.</p>
+      <Btn onClick={retry} className="w-full">Повторить</Btn>
+    </div>);
+  return <p className="pt-24 text-center text-neutral-500">{text}</p>;
+}
+
+function OfflineBar({ offline }) {
+  if (!offline) return null;
+  return <div className="fixed inset-x-0 top-14 z-20 mx-auto w-fit max-w-[92vw] rounded-full bg-amber-500 px-4 py-1.5 text-center text-xs font-semibold text-black">Нет связи — изменения сохранятся, когда появится интернет</div>;
+}
+
+function CloudLogin({ onOk }) {
+  const [email, setEmail] = useState(""), [pw, setPw] = useState(""), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const go = async () => {
+    if (!email.trim() || !pw || busy) return;
+    setBusy(true); setErr("");
+    try { await signIn(email, pw); onOk(); } catch (e) { setErr(e.code === "bad_credentials" ? "Неверная почта или пароль." : "Нет связи с сервером. Попробуй ещё раз."); }
+    setBusy(false);
+  };
+  return (
+    <div className="mx-auto max-w-sm space-y-4 pt-10">
+      <h1 className="text-4xl font-extrabold leading-tight">Вход для тренера</h1>
+      <Input type="email" autoComplete="username" placeholder="Электронная почта" value={email} onChange={(e) => { setEmail(e.target.value); setErr(""); }} />
+      <Input type="password" autoComplete="current-password" placeholder="Пароль" value={pw} onChange={(e) => { setPw(e.target.value); setErr(""); }} onKeyDown={(e) => e.key === "Enter" && go()} />
+      {err && <p className="text-sm text-red-500">{err}</p>}
+      <Btn onClick={go} className="w-full">{busy ? "Входим…" : "Войти"}</Btn>
+    </div>
+  );
+}
+
+function CloudTrainer({ onLost }) {
+  const adapter = useMemo(trainerAdapter, []);
+  const { db, set, err, offline, retry } = useStore(adapter);
+  useSeeding(db, set, !!db);
+  useEffect(() => { if (err?.code === "auth") onLost(); }, [err]);
+  if (!db) return <Loading err={err?.code === "auth" ? null : err} retry={retry} />;
+  return <><OfflineBar offline={offline} /><Trainer db={db} set={set} /></>;
+}
+
+function CloudClient({ token, sess, setSess }) {
+  const adapter = useMemo(() => clientAdapter(token), [token]);
+  const { db, set, err, offline, retry } = useStore(adapter);
+  if (err?.code === "not_found") return <Login invalid />;
+  if (!db) return <Loading err={err} retry={retry} />;
+  const me = db.clients[0], cid = me.id;
+  const comp = { ...db, session: { clientId: cid, welcomed: !!sess.welcomed, onboarded: !!sess.onboarded } };
+  const setC = (fn) => set((d) => {
+    d.session = { clientId: cid, welcomed: !!sess.welcomed, onboarded: !!sess.onboarded };
+    fn(d);
+    const s2 = d.session; delete d.session;
+    if (!s2.clientId) { setSess({ token: null, welcomed: false, onboarded: false }); window.location.hash = ""; }
+    else if (!!s2.welcomed !== !!sess.welcomed || !!s2.onboarded !== !!sess.onboarded) setSess({ ...sess, welcomed: !!s2.welcomed, onboarded: !!s2.onboarded });
+  });
+  return (<>
+    <OfflineBar offline={offline} />
+    {me.active === false ? <Blocked /> : !sess.welcomed ? <Welcome set={setC} /> : !sess.onboarded ? <Onboarding set={setC} /> : <ClientApp db={comp} set={setC} />}
+  </>);
+}
+
+function Shell({ right, children }) {
+  return (
+    <div className="min-h-screen bg-neutral-950 font-sans text-white antialiased" style={{ fontFamily: "Inter, -apple-system, 'SF Pro Display', system-ui, sans-serif" }}>
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-white/5 bg-neutral-950/90 px-4 py-3 backdrop-blur">
+        <span className="flex items-center gap-2 font-extrabold"><img src="/icon-192.png" alt="" className="h-8 w-8 rounded-full object-cover" />Твой Друг Тренер</span>
+        {right}
+      </header>
+      <main className="mx-auto max-w-2xl p-4">{children}</main>
+    </div>
+  );
+}
+
+function CloudApp() {
+  const [hash, setHash] = useState(window.location.hash);
+  const [authed, setAuthed] = useState(hasAuth());
+  const [stored, setStored] = useState(() => { try { return JSON.parse(localStorage.getItem("fitcoach-session")) || {}; } catch { return {}; } });
+  useEffect(() => { const f = () => setHash(window.location.hash); window.addEventListener("hashchange", f); return () => window.removeEventListener("hashchange", f); }, []);
+  useEffect(() => { try { localStorage.setItem("fitcoach-session", JSON.stringify(stored)); } catch {} }, [stored]);
+  useEffect(() => {
+    document.title = "Твой Друг Тренер";
+    [["icon", "/favicon.png"], ["apple-touch-icon", "/apple-touch-icon.png"]].forEach(([rel, href]) => { let l = document.querySelector(`link[rel='${rel}']`); if (!l) { l = document.createElement("link"); l.rel = rel; document.head.appendChild(l); } l.href = href; });
   }, []);
+  const adminPage = hash === "#admin";
+  const lm = hash.match(/^#c\/(.+)$/);
+  const sess = lm && lm[1] !== stored.token ? { token: lm[1], welcomed: false, onboarded: false } : stored;
+  useEffect(() => { if (sess !== stored) setStored(sess); }, [sess === stored]);
+  const out = () => { signOut(); setAuthed(false); };
+  return (
+    <Shell right={adminPage && authed ? <Btn red={false} className="!py-1.5" onClick={() => { out(); window.location.hash = ""; }}>Выйти</Btn> : null}>
+      {adminPage ? (authed ? <CloudTrainer onLost={out} /> : <CloudLogin onOk={() => setAuthed(true)} />)
+        : sess.token ? <CloudClient key={sess.token} token={sess.token} sess={sess} setSess={setStored} /> : <Login />}
+    </Shell>
+  );
+}
+
+export default function App() { return CLOUD ? <CloudApp /> : <LocalApp />; }
+
+function LocalApp() {
+  const [db, setDb] = useLS("fitcoach-db", seed);
+  const set = (fn) => setDb((d) => { const c = structuredClone(d); fn(c); return c; });
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => { const f = () => setHash(window.location.hash); window.addEventListener("hashchange", f); return () => window.removeEventListener("hashchange", f); }, []);
+  const adminPage = hash === "#admin"; // тренер заходит по адресу вашсайт/#admin, клиентам ссылка не показывается
+  const isAdmin = DEV_SWITCHER || db.session.admin === true;
+  useSeeding(db, set, true);
   useEffect(() => { if (DEV_SWITCHER && !db.session.clientId && db.clients[0]) set((d) => { d.session.clientId = d.clients[0].id; }); }, [db.session.clientId, db.clients.length]);
   const replay = () => set((d) => { d.session.onboarded = false; d.session.welcomed = false; });
   const { clientId, onboarded } = db.session;
