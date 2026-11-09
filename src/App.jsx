@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Video, Home, Dumbbell, User, Plus, Check, Flame, Droplets, Moon, BookOpen, Library, Power, ListChecks, Link2, Paperclip, Undo2, Redo2, Highlighter, Footprints, Play, ChevronLeft, Users, ClipboardList, Trash2, Calendar, ChevronRight } from "lucide-react";
+import { Lock, Video, Home, Dumbbell, User, Plus, Check, Flame, Droplets, Moon, BookOpen, Library, Power, ListChecks, Link2, Paperclip, Undo2, Redo2, Highlighter, Footprints, Play, ChevronLeft, Users, ClipboardList, Trash2, Calendar, ChevronRight } from "lucide-react";
 import { CLOUD, hasAuth, signIn, signOut, trainerPoll, trainerInit, trainerSave, trainerLogsPatch, clientGet, clientPatch, diff, mergePatch, secret } from "./cloud.js";
 
 const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -843,7 +843,12 @@ function Onboarding({ set }) {
 
 // Тариф клиента: «ведение» (с обратной связью) или «программа» (только тренировки). Без отметки = ведение.
 const tierOf = (c) => (c?.tier === "program" ? "program" : "coaching");
-const tgOf = (c) => String(c?.tg || "").trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, "");
+// Имя Telegram-бота (без @), которого создали в @BotFather. Пока пусто — видео отправляются тренеру в личный чат.
+const BOT_USERNAME = "drugtrner_bot";
+const TG_DEFAULT = "Toshidzee"; // Telegram тренера по умолчанию
+const tgOf = (c) => String(c?.tg || TG_DEFAULT).trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, "");
+const openUrl = (u) => { const a = document.createElement("a"); a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer"; document.body.appendChild(a); a.click(); a.remove(); };
+const openTg = (tg) => { const a = document.createElement("a"); a.href = `https://t.me/${tg}`; a.target = "_blank"; a.rel = "noopener noreferrer"; document.body.appendChild(a); a.click(); a.remove(); };
 const waitingChecks = (L) => Object.entries(L?.checks || {}).filter(([, v]) => v && v.st === "wait");
 // Привычки: ключ, название, цель по умолчанию, шаг кнопки «+», единица, иконка
 const HABIT_BASE = [["water", "Вода", 2, 0.25, "л", Droplets], ["steps", "Шаги", 10000, 1000, "шагов", Footprints], ["cal", "Калории", 2000, 250, "ккал", Flame], ["sleep", "Сон", 8, 0.5, "ч", Moon]];
@@ -855,7 +860,7 @@ function ClientApp({ db, set }) {
   const cid = db.session.clientId;
   const me = db.clients.find((c) => c.id === cid);
   const [tab, setTab] = useState("home");
-  const [sel, setSel] = useState(today());
+  const [sel, setSel] = useState(today()), [openP, setOpenP] = useState(null);
   const [run, setRun] = useState(null);
   const [memoOpen, setMemoOpen] = useState(null), [memoFrom, setMemoFrom] = useState(null);
   const L = db.logs[cid] || { days: {}, done: {}, sets: {} };
@@ -863,7 +868,7 @@ function ClientApp({ db, set }) {
   // видео и комментарий упражнения из библиотеки подтягиваются актуальные
   const rx = (x) => { const l = x.libId && (db.library || []).find((y) => y.id === x.libId); return l ? { ...x, url: l.url || x.url, comment: x.comment || l.comment } : x; };
   const ensure = (d) => { d.logs[cid] ||= { days: {}, done: {}, sets: {} }; return d.logs[cid]; };
-  const hab = habitsOf(me);
+  const hab = habitsOf(me), prog = tierOf(me) === "program";
   const day = { water: 0, steps: 0, cal: 0, sleep: 0, ...(L.days[today()] || {}) };
   const bump = (k, inc, goal, toggle) => set((d) => { const l = ensure(d); const cur = l.days[today()] ||= { water: 0, steps: 0, cal: 0, sleep: 0 }, v = cur[k] || 0;
     cur[k] = toggle ? (v >= goal ? 0 : goal) : Math.min(goal, +(v + inc).toFixed(2)); });
@@ -903,6 +908,7 @@ function ClientApp({ db, set }) {
           <div className="mb-3 flex items-center justify-between"><p className="flex items-center gap-2 font-semibold"><Calendar size={16} />Календарь тренировок</p><p className="flex items-center gap-1 text-sm text-red-500"><Flame size={16} />Серия: {streak} дн.</p></div>
           <MonthCal plans={plans} L={L} />
         </Card>
+        {prog ? <Upsell me={me} title="Привычки, шаги, калории и сон" text="В онлайн-ведении тренер задаёт тебе личные цели по воде, шагам, калориям и сну, следит за ними и корректирует. Здесь эта часть закрыта." /> : <>
         <Card>
           <p className="mb-3 font-semibold">Привычки на сегодня</p>
           <div className="space-y-4">
@@ -924,6 +930,7 @@ function ClientApp({ db, set }) {
           <p className="mb-3 font-semibold">Привычки за 7 дней</p>
           <TriRing days={L.days} habits={hab} />
         </Card>
+        </>}
       </>)}
 
       {tab === "workouts" && (<>
@@ -934,18 +941,31 @@ function ClientApp({ db, set }) {
           <button onClick={() => setSel(shift(sel, 7))} aria-label="Следующая неделя"><ChevronRight size={18} /></button>
         </div>
         {!dayPlans.length && <Card className="text-neutral-500">На этой неделе тренировок нет — отдых.</Card>}
-        {dayPlans.map((p, n) => (
-          <Card key={p.id} className="space-y-3">
-            <div className="flex items-center justify-between"><div><p className="text-xs text-neutral-500">Тренировка {n + 1} · {dayLong(p.date)}</p><p className="text-lg font-bold">{p.title}</p></div>{L.done[p.id] ? <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-600"><Check size={16} /></span> : isMissed(p, L) && <span className="text-xs text-red-400">Пропущена</span>}</div>
-            <div className="space-y-2">
-              {p.exercises.map((x) => (
-                <div key={x.id} className="flex items-start gap-3 rounded-2xl bg-neutral-800 px-4 py-3 text-sm">
-                  <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${L.sets[x.id]?.ok ? "border-red-600 bg-red-600" : "border-neutral-600"}`}>{L.sets[x.id]?.ok && <Check size={12} />}</span>
-                  <div><p className="font-medium">{x.name}</p>{scheme(x, aw(x)) && <p className="text-xs font-semibold text-red-400">{scheme(x, aw(x))}</p>}{rx(x).comment && <p className="text-xs text-neutral-500">{rx(x).comment}</p>}</div>
-                </div>))}
-            </div>
-            {p.date <= today() ? <Btn onClick={() => setRun(p.id)} className="w-full">{L.done[p.id] ? "Открыть снова" : "Начать тренировку"}</Btn> : <p className="text-xs text-neutral-500">Откроется в день тренировки.</p>}
-          </Card>))}
+        {dayPlans.map((p, n) => {
+          const isOpen = openP === p.id, dn = !!L.done[p.id], ms = isMissed(p, L);
+          return (
+            <Card key={p.id} className={`!p-0 overflow-hidden transition-colors ${isOpen ? "border-red-600/60" : ""}`}>
+              <button type="button" aria-expanded={isOpen} onClick={() => setOpenP(isOpen ? null : p.id)} className="flex w-full items-center gap-3 p-4 text-left">
+                <span className={`flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-2xl ${dn ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-200"}`}>{dn ? <Check size={22} /> : <><span className="text-[10px] leading-none text-neutral-400">День</span><span className="text-xl font-extrabold leading-tight">{n + 1}</span></>}</span>
+                <span className="min-w-0 flex-1"><span className="block truncate text-lg font-bold">{p.title}</span><span className="block text-xs text-neutral-500">{dayLong(p.date)} · {p.exercises.length} упр.{ms && <span className="ml-1 text-red-400">· пропущена</span>}</span></span>
+                <ChevronRight size={20} className={`shrink-0 text-neutral-500 transition-transform duration-300 ${isOpen ? "rotate-90" : ""}`} />
+              </button>
+              <div className={`grid transition-[grid-template-rows] duration-300 ease-out ${isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
+                <div className="overflow-hidden">
+                  <div className="space-y-3 px-4 pb-4">
+                    <div className="space-y-2">
+                      {p.exercises.map((x) => (
+                        <div key={x.id} className="flex items-start gap-3 rounded-2xl bg-neutral-800 px-4 py-3 text-sm">
+                          <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${L.sets[x.id]?.ok ? "border-red-600 bg-red-600" : "border-neutral-600"}`}>{L.sets[x.id]?.ok && <Check size={12} />}</span>
+                          <div><p className="font-medium">{x.name}</p>{scheme(x, aw(x)) && <p className="text-xs font-semibold text-red-400">{scheme(x, aw(x))}</p>}{rx(x).comment && <p className="text-xs text-neutral-500">{rx(x).comment}</p>}</div>
+                        </div>))}
+                    </div>
+                    {p.date <= today() ? <Btn onClick={() => setRun(p.id)} className="w-full">{dn ? "Открыть снова" : "Начать тренировку"}</Btn> : <p className="text-xs text-neutral-500">Откроется в день тренировки.</p>}
+                  </div>
+                </div>
+              </div>
+            </Card>);
+        })}
       </>)}
 
       {tab === "info" && <Memos memos={db.memos || []} open={memoOpen} setOpen={setMemoOpen} backLabel={memoFrom ? "К замерам" : "Все памятки"} onBack={() => { setMemoOpen(null); if (memoFrom) { setTab(memoFrom); setMemoFrom(null); } }} />}
@@ -968,7 +988,7 @@ function ClientApp({ db, set }) {
           <MeasureProgress L={L} />
           <MeasureHistory L={L} />
         </Card>
-        <Achievements list={achievements(me, L, plans)} />
+        {prog ? <Upsell me={me} title="Достижения" text="Награды за регулярность и результаты открываются в онлайн-ведении: тренер видит твой прогресс и поддерживает." /> : <Achievements list={achievements(me, L, plans)} />}
         <Btn red={false} onClick={() => set((d) => { d.session.clientId = null; d.session.onboarded = false; d.session.welcomed = false; })}>Выйти</Btn>
       </>)}
 
@@ -1629,7 +1649,13 @@ function TechReview({ db, set, client }) {
       {wait.map(([id, v]) => (
         <div key={id} className="space-y-2 rounded-2xl bg-neutral-800 p-3">
           <p className="text-sm font-semibold">{v.name} <span className="text-xs font-normal text-neutral-500">· {v.date && dayLong(v.date)}</span></p>
-          <textarea rows={3} value={txt[id] || ""} onChange={(e) => setTxt({ ...txt, [id]: e.target.value })} placeholder="Что исправить: колени, спина, амплитуда…" className="w-full rounded-xl bg-neutral-900 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-500" />
+          {BOT_USERNAME && <p className="text-xs text-neutral-400">{v.got ? "Видео в Telegram: тема «" + client.name + "» в вашей группе. Нажмите «Ответить» на видео и ответьте текстом, голосовым или кружком." : "Клиент нажал «отправить» — видео ещё не пришло в Telegram."}</p>}
+          {!BOT_USERNAME && <div className="flex flex-wrap gap-2 text-xs">
+            {v.link && /^https?:\/\//i.test(v.link) && <a href={v.link} target="_blank" rel="noreferrer" className="rounded-full bg-red-600 px-3 py-1.5 font-semibold text-white">Открыть видео</a>}
+            {L.tgUser && <a href={`https://t.me/${L.tgUser}`} target="_blank" rel="noreferrer" className="rounded-full bg-neutral-700 px-3 py-1.5 text-neutral-100">Открыть чат @{L.tgUser}</a>}
+            {!v.link && !L.tgUser && <span className="text-neutral-500">Клиент не указал ник — найдите его в Telegram по имени «{client.name}»</span>}
+          </div>}
+          <textarea rows={2} value={txt[id] || ""} onChange={(e) => setTxt({ ...txt, [id]: e.target.value })} placeholder={BOT_USERNAME ? "Или ответьте текстом здесь…" : "Что исправить: колени, спина, амплитуда…"} className="w-full rounded-xl bg-neutral-900 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-500" />
           <Btn onClick={() => reply(id)}>Отправить разбор</Btn>
         </div>
       ))}
@@ -1638,22 +1664,53 @@ function TechReview({ db, set, client }) {
   );
 }
 
+function Upsell({ me, title, text, compact }) {
+  const [msg, setMsg] = useState(""), tg = tgOf(me);
+  const go = () => {
+    const t = `${me.name}: хочу перейти на онлайн-ведение с обратной связью`;
+    try { navigator.clipboard?.writeText(t); } catch {}
+    setMsg(tg ? "Текст скопирован — вставьте его в чат с тренером." : "Напишите тренеру, что хотите онлайн-ведение.");
+    if (tg) openTg(tg);
+  };
+  const body = (<>
+    <div className="flex items-start gap-3"><span className="mt-0.5 rounded-full bg-red-600/20 p-2"><Lock size={16} className="text-red-400" /></span><div><p className="font-semibold">{title}</p><p className="text-sm text-neutral-400">{text}</p></div></div>
+    <Btn onClick={go} className="w-full">Хочу онлайн-ведение</Btn>
+    {msg && <p className="text-xs text-neutral-400">{msg}</p>}
+  </>);
+  return compact ? <div className="space-y-3 rounded-2xl bg-neutral-800 p-3">{body}</div> : <Card className="space-y-3 border-red-600/30">{body}</Card>;
+}
+
 function TechCheck({ me, p, e, L, set, ensure }) {
-  const c = L.checks?.[e.id], tg = tgOf(me), [msg, setMsg] = useState("");
-  if (tierOf(me) !== "coaching") return null;
+  const c = L.checks?.[e.id], tg = tgOf(me), [msg, setMsg] = useState(""), [nick, setNick] = useState(""), [lnk, setLnk] = useState("");
+  if (tierOf(me) !== "coaching") return <Upsell me={me} compact title="Разбор техники тренером" text="Отправляешь видео — тренер разбирает технику и пишет, что исправить. Доступно в онлайн-ведении." />;
   const send = () => {
     const text = `${me.name} · ${e.name}${scheme(e) ? " · " + scheme(e) : ""} · тренировка ${p.date.split("-").reverse().join(".")} — проверь технику`;
+    if (BOT_USERNAME) {
+      set((d) => { const l = ensure(d); (l.checks ||= {})[e.id] = { ...(l.checks?.[e.id] || {}), name: e.name, planId: p.id, date: p.date, st: "wait", ts: Date.now() }; });
+      setMsg("Открылся Telegram: нажмите «Старт» и пришлите видео боту.");
+      openUrl(`https://t.me/${BOT_USERNAME}?start=${me.token || me.id}_${e.id}`);
+      return;
+    }
     try { navigator.clipboard?.writeText(text); } catch {}
     set((d) => { const l = ensure(d); (l.checks ||= {})[e.id] = { name: e.name, planId: p.id, date: p.date, st: "wait", ts: Date.now() }; });
     setMsg(tg ? "Текст скопирован. Вставьте его в чат и приложите видео." : "Тренер отмечен. Отправьте ему видео в Telegram.");
-    if (tg) window.open(`https://t.me/${tg}`, "_blank", "noopener");
+    if (tg) openTg(tg);
   };
   return (
     <div className="space-y-2 rounded-2xl bg-neutral-800 p-3">
       {c?.st === "done" && c.reply && <div><p className="text-xs font-semibold text-red-400">Разбор тренера</p><p className="whitespace-pre-wrap text-sm">{c.reply}</p></div>}
-      {c?.st === "wait" && <p className="text-sm text-neutral-300">Видео отправлено — ждёт разбора тренера</p>}
+      {c?.st === "done" && !c.reply && c.via === "tg" && <div><p className="text-xs font-semibold text-red-400">Разбор тренера</p><p className="text-sm">Тренер ответил в Telegram ({{ circle: "видеокружок", voice: "голосовое", video: "видео", photo: "фото" }[c.kind] || "сообщение"}). Откройте чат с ботом.</p>{BOT_USERNAME && <button type="button" onClick={() => openUrl(`https://t.me/${BOT_USERNAME}`)} className="mt-2 rounded-full bg-neutral-700 px-4 py-2 text-sm font-semibold">Открыть чат с ботом</button>}</div>}
+      {c?.st === "wait" && <p className="text-sm text-neutral-300">{c.got ? "Видео получено ✅ Ждёт разбора тренера" : "Видео отправлено — ждёт разбора тренера"}</p>}
       <button type="button" onClick={send} className="flex w-full items-center justify-center gap-2 rounded-full bg-neutral-700 py-2.5 text-sm font-semibold text-neutral-100"><Video size={16} />{c ? "Отправить новое видео тренеру" : "Отправить видео тренеру"}</button>
       {msg && <p className="text-xs text-neutral-400">{msg}</p>}
+      {c?.st === "wait" && !BOT_USERNAME && (
+        <div className="space-y-2 border-t border-white/10 pt-2">
+          <p className="text-xs text-neutral-500">Чтобы тренер быстрее нашёл видео (необязательно):</p>
+          {!L.tgUser && <div className="flex gap-2"><Input placeholder="Твой ник в Telegram, @name" value={nick} onChange={(ev) => setNick(ev.target.value)} /><Btn red={false} onClick={() => { const v = nick.trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, ""); if (v) set((d) => { ensure(d).tgUser = v; }); }}>OK</Btn></div>}
+          <div className="flex gap-2"><Input placeholder="Ссылка на видео (Google Drive, YouTube…)" value={lnk} onChange={(ev) => setLnk(ev.target.value)} /><Btn red={false} onClick={() => { const v = lnk.trim(); if (v) { set((d) => { const l = ensure(d); if (l.checks?.[e.id]) l.checks[e.id].link = v; }); setLnk(""); } }}>OK</Btn></div>
+          {c.link && <p className="text-xs text-neutral-400">Ссылка передана тренеру ✓</p>}
+        </div>
+      )}
     </div>
   );
 }
