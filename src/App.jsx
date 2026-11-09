@@ -844,7 +844,7 @@ function Onboarding({ set }) {
 // Тариф клиента: «ведение» (с обратной связью) или «программа» (только тренировки). Без отметки = ведение.
 const tierOf = (c) => (c?.tier === "program" ? "program" : "coaching");
 // Имя Telegram-бота (без @), которого создали в @BotFather. Пока пусто — видео отправляются тренеру в личный чат.
-const BOT_USERNAME = "drugtrner_bot";
+const BOT_USERNAME = "drugtrener_bot";
 const TG_DEFAULT = "Toshidzee"; // Telegram тренера по умолчанию
 const tgOf = (c) => String(c?.tg || TG_DEFAULT).trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, "");
 const openUrl = (u) => { const a = document.createElement("a"); a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer"; document.body.appendChild(a); a.click(); a.remove(); };
