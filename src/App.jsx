@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Home, Dumbbell, User, Plus, Check, Flame, Droplets, Moon, BookOpen, Library, Power, ListChecks, Link2, Paperclip, Undo2, Redo2, Highlighter, Footprints, Play, ChevronLeft, Users, ClipboardList, Trash2, Calendar, ChevronRight } from "lucide-react";
+import { Video, Home, Dumbbell, User, Plus, Check, Flame, Droplets, Moon, BookOpen, Library, Power, ListChecks, Link2, Paperclip, Undo2, Redo2, Highlighter, Footprints, Play, ChevronLeft, Users, ClipboardList, Trash2, Calendar, ChevronRight } from "lucide-react";
 import { CLOUD, hasAuth, signIn, signOut, trainerPoll, trainerInit, trainerSave, trainerLogsPatch, clientGet, clientPatch, diff, mergePatch, secret } from "./cloud.js";
 
 const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -18,18 +18,19 @@ const pm = (m, n) => { const d = new Date(m + "-01T00:00:00"); d.setMonth(d.getM
 const fileToUrl = (f) => new Promise((res) => { const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const k = Math.min(1, 700 / im.width), c = document.createElement("canvas"); c.width = im.width * k; c.height = im.height * k; c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); res(c.toDataURL("image/jpeg", 0.75)); }; im.src = r.result; }; r.readAsDataURL(f); });
 
 function achievements(me, L, plans) {
+  const hb = habitsOf(me), gl = (k) => hb.find((h) => h[0] === k)?.[2];
   const days = L.days || {};
   const has = (pred, s) => days[s] && pred(days[s]);
   const run = (pred) => { let best = 0; Object.keys(days).forEach((s) => { let c = 0; while (has(pred, shift(s, -c))) c++; best = Math.max(best, c); }); return best; };
-  const wk = {}; Object.keys(days).forEach((s) => { if (days[s].steps >= 10000) { const k = shift(s, -((new Date(s + "T00:00:00").getDay() + 6) % 7)); wk[k] = (wk[k] || 0) + 1; } });
+  const wk = {}; Object.keys(days).forEach((s) => { if (gl("steps") && days[s].steps >= gl("steps")) { const k = shift(s, -((new Date(s + "T00:00:00").getDay() + 6) % 7)); wk[k] = (wk[k] || 0) + 1; } });
   const byM = {}; plans.forEach((p) => { (byM[ym(p.date)] ||= []).push(p); });
   const g = {}; (L.wlog || []).forEach((e) => { g[e.name] ||= {}; g[e.name][e.m] = Math.max(g[e.name][e.m] || 0, e.w); });
 
   return [
     { e: "👟", t: "Первый шаг", d: "Заполнить профиль и выполнить первую тренировку", ok: !!(me.name && me.age) && Object.keys(L.done || {}).length > 0 },
-    { e: "💧", t: "Водная стихия", d: "Выполнить норму воды 7 дней подряд", ok: run((v) => v.water >= 2) >= 7 },
+    { e: "💧", t: "Водная стихия", d: "Выполнить норму воды 7 дней подряд", ok: !!gl("water") && run((v) => v.water >= gl("water")) >= 7 },
     { e: "⚡️", t: "Машина шагов", d: "Набрать целевое количество шагов 5 дней за неделю", ok: Object.values(wk).some((c) => c >= 5) },
-    { e: "🌟", t: "Идеальная неделя", d: "Закрыть все привычки все 7 дней без пропусков", ok: run((v) => v.water >= 2 && v.steps >= 10000 && v.cal >= 2000 && v.sleep >= 8) >= 7 },
+    { e: "🌟", t: "Идеальная неделя", d: "Закрыть все привычки все 7 дней без пропусков", ok: hb.length > 0 && run((v) => hb.every(([k, , g]) => (v[k] || 0) >= g)) >= 7 },
     { e: "🛡️", t: "Железный характер", d: "Завершить все запланированные силовые за месяц", ok: Object.values(byM).some((a) => a.every((p) => L.done?.[p.id])) },
     { e: "🏋️‍♀️", t: "Повелитель весов", d: "Увеличить рабочий вес в любом упражнении по сравнению с прошлым месяцем", ok: Object.values(g).some((mm) => { const k = Object.keys(mm).sort(); return k.some((m, i) => i && mm[m] > mm[k[i - 1]]); }) },
     { e: "🔥", t: "Преодоление", d: "Отметить сложность «Тяжело» (8–10) и дойти до конца тренировки", ok: !!L.hard },
@@ -47,7 +48,9 @@ const dayLong = (d) => cap(new Date(d + "T00:00:00").toLocaleDateString("ru-RU",
 const nf = (x) => String(Math.round(x * 10) / 10).replace(".", ",");
 const mnum = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
 const delta = (a, b, u) => { const d = Math.round((a - b) * 10) / 10; return d === 0 ? "без изменений" : `${d > 0 ? "+" : "−"}${nf(Math.abs(d))} ${u}`; };
-const MEASURE_FIELDS = [["weight", "Вес", "кг"], ["neck", "Шея", "см"], ["shoulders", "Плечи", "см"], ["chest", "Грудь", "см"], ["arm", "Рука", "см"], ["waist", "Талия", "см"], ["hips", "Бёдра", "см"], ["thigh", "Нога", "см"], ["calf", "Икра", "см"]];
+// «3×10 · 40 кг» из структурных полей упражнения (подходы, повторы, вес)
+const scheme = (e, w) => [e.sets && e.reps ? `${e.sets}×${e.reps}` : e.reps ? `${e.reps} повт.` : e.sets ? `${e.sets} подх.` : "", w != null && w !== "" ? `${w} кг` : ""].filter(Boolean).join(" · ");
+const MEASURE_FIELDS = [["height", "Рост", "см"], ["weight", "Вес", "кг"], ["neck", "Шея", "см"], ["shoulders", "Плечи", "см"], ["chest", "Грудь", "см"], ["arm", "Рука", "см"], ["waist", "Талия", "см"], ["hips", "Бёдра", "см"], ["thigh", "Нога", "см"], ["calf", "Икра", "см"]];
 const MEASURE_MEMO_ID = "how-to-measure"; // памятка, на которую ведёт ссылка «Как делать замеры?»
 
 // Стартовые шаблоны программ — ЗАГОТОВКИ, замените на свои (можно менять, удалять и сохранять свои из конструктора).
@@ -485,7 +488,7 @@ function TemplateEditor({ db, set, init, onClose }) {
   const filled = [1, 2, 3, 4, 5, 6, 0].filter((i) => wk[i]?.exercises?.length);
   const save = () => {
     const n = name.trim(), out = {};
-    filled.forEach((i) => { out[i] = { title: wk[i].title || "", exercises: wk[i].exercises.map((e) => ({ name: e.name, comment: e.comment || "", libId: e.libId || "", url: e.url || "" })) }; });
+    filled.forEach((i) => { out[i] = { title: wk[i].title || "", exercises: wk[i].exercises.map((e) => ({ name: e.name, comment: e.comment || "", sets: e.sets || "", reps: e.reps || "", libId: e.libId || "", url: e.url || "" })) }; });
     if (!n) { setMsg("Введите название программы."); return; }
     if (!filled.length) { setMsg("Добавьте упражнения хотя бы в один день."); return; }
     set((d) => {
@@ -517,7 +520,11 @@ function TemplateEditor({ db, set, init, onClose }) {
               <button type="button" aria-label="Убрать упражнение" onClick={() => setCur({ exercises: cur.exercises.filter((x) => x.id !== e.id) })}><Trash2 size={16} className="text-neutral-500" /></button>
             </div>
           </div>
-          <InputS placeholder="Подходы, повторы, техника" value={e.comment || ""} onChange={(ev) => upd(e.id, { comment: ev.target.value })} />
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Подходы</span><InputS type="number" inputMode="numeric" min="1" placeholder="3" value={e.sets ?? ""} onChange={(ev) => upd(e.id, { sets: ev.target.value })} /></label>
+            <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Повторения</span><InputS placeholder="8–10" value={e.reps ?? ""} onChange={(ev) => upd(e.id, { reps: ev.target.value })} /></label>
+          </div>
+          <InputS placeholder="Комментарий, техника" value={e.comment || ""} onChange={(ev) => upd(e.id, { comment: ev.target.value })} />
         </div>
       ))}
       {!cur.exercises.length && <p className="text-xs text-neutral-500">В этот день пока пусто — это день отдыха.</p>}
@@ -549,13 +556,14 @@ function Trainer({ db, set }) {
   const [open, setOpen] = useState(null);
   const [form, setForm] = useState(null);
   const [plan, setPlan] = useState({ clientId: db.clients[0]?.id || "", date: today(), weeks: 4, wk: {} });
-  const [ex, setEx] = useState({ name: "", url: "", comment: "", w: "", libId: "" });
+  const [ex, setEx] = useState({ name: "", url: "", comment: "", sets: "", reps: "", w: "", libId: "" });
   useEffect(() => { if (db.clients[0] && !db.clients.some((c) => c.id === plan.clientId)) setPlan((p) => ({ ...p, clientId: db.clients[0].id })); }, [db.clients.length]);
+  const [tierF, setTierF] = useState("all");
   const [arm, setArm] = useState(null), [note, setNote] = useState(""), [tplName, setTplName] = useState(""), [edT, setEdT] = useState(null);
 
   const addClient = () => {
     if (!form.name) return;
-    set((d) => { d.clients.push({ id: uid(), token: secret(), name: form.name, age: +form.age || 0, inbody: { weight: +form.weight || 0, muscle: +form.muscle || 0, fat: +form.fat || 0, bmi: +form.bmi || 0 } }); });
+    set((d) => { d.clients.push({ id: uid(), token: secret(), tg: d.clients[0]?.tg || "", name: form.name, age: +form.age || 0, inbody: { weight: +form.weight || 0, muscle: +form.muscle || 0, fat: +form.fat || 0, bmi: +form.bmi || 0 } }); });
     setForm(null);
   };
   const [dow, setDow] = useState(1);
@@ -587,7 +595,7 @@ function Trainer({ db, set }) {
     Object.entries(t.wk).forEach(([d, w]) => {
       wk[d] = { title: w.title || "", exercises: w.exercises.map((e) => {
         const l = (db.library || []).find((y) => y.id === e.libId);
-        const x = { id: uid(), libId: e.libId || "", name: e.name, url: l?.url || e.url || "", comment: e.comment || l?.comment || "" };
+        const x = { id: uid(), libId: e.libId || "", name: e.name, url: l?.url || e.url || "", comment: e.comment || l?.comment || "", sets: e.sets || "", reps: e.reps || "" };
         return { ...x, w: curW(plan.clientId, x) };
       }) };
     });
@@ -599,14 +607,14 @@ function Trainer({ db, set }) {
     const cid = plan.clientId, wk = {};
     db.plans.filter((p) => p.clientId === cid && p.date >= today()).sort((a, b) => a.date.localeCompare(b.date)).forEach((p) => {
       const dw = new Date(p.date + "T00:00:00").getDay(); if (wk[dw]) return;
-      wk[dw] = { title: p.title, exercises: p.exercises.map((e) => ({ id: uid(), libId: e.libId || "", name: e.name, url: e.url || "", comment: e.comment || "", w: curW(cid, e) })) };
+      wk[dw] = { title: p.title, exercises: p.exercises.map((e) => ({ id: uid(), libId: e.libId || "", name: e.name, url: e.url || "", comment: e.comment || "", sets: e.sets || "", reps: e.reps || "", w: curW(cid, e) })) };
     });
     if (!Object.keys(wk).length) { flash("У этого клиента нет будущих тренировок."); return; }
     loadWk(wk, "Загружена текущая программа клиента. Измените и нажмите «Создать программу» — тренировки на эти даты заменятся.");
   };
   const saveTpl = () => {
     const name = tplName.trim(), wk = {};
-    Object.entries(plan.wk).forEach(([d, w]) => { if (w.exercises.length) wk[d] = { title: w.title || "", exercises: w.exercises.map((e) => ({ name: e.name, comment: e.comment || "", libId: e.libId || "", url: e.url || "" })) }; });
+    Object.entries(plan.wk).forEach(([d, w]) => { if (w.exercises.length) wk[d] = { title: w.title || "", exercises: w.exercises.map((e) => ({ name: e.name, comment: e.comment || "", sets: e.sets || "", reps: e.reps || "", libId: e.libId || "", url: e.url || "" })) }; });
     if (!name) { flash("Введите название шаблона."); return; }
     if (!Object.keys(wk).length) { flash("Сначала добавьте упражнения хотя бы в один день."); return; }
     set((d) => { d.templates ||= []; const i = d.templates.findIndex((t) => t.name.trim().toLowerCase() === name.toLowerCase()); const t = { id: i >= 0 ? d.templates[i].id : uid(), name, wk }; if (i >= 0) d.templates[i] = t; else d.templates.push(t); });
@@ -624,11 +632,12 @@ function Trainer({ db, set }) {
 
       {tab === "clients" && !client && !form && (<>
         <div className="flex items-center justify-between"><H>Клиенты</H><Btn onClick={() => setForm({ name: "", age: "", weight: "", muscle: "", fat: "", bmi: "" })}><Plus size={16} className="mr-1 inline" />Добавить клиента</Btn></div>
+        <div className="flex gap-2 text-sm">{[["all", "Все"], ["coaching", "Ведение"], ["program", "Программа"]].map(([k, l]) => <button key={k} type="button" onClick={() => setTierF(k)} className={`rounded-full px-4 py-1.5 ${tierF === k ? "bg-white text-black" : "bg-neutral-900 text-neutral-400"}`}>{l}</button>)}</div>
         <div className="grid gap-3 sm:grid-cols-2">
-          {db.clients.map((c) => (
+          {db.clients.filter((c) => tierF === "all" || tierOf(c) === tierF).map((c) => (
             <Card key={c.id} onClick={() => setOpen(c.id)} className="cursor-pointer hover:border-red-600/50">
               <div className="flex items-center justify-between">
-                <div><p className="text-lg font-bold">{c.name}</p><p className="text-sm text-neutral-500">{c.age} лет · {db.plans.filter((p) => p.clientId === c.id).length} тренировок{c.active === false && " · доступ закрыт"}</p></div>
+                <div><p className="flex flex-wrap items-center gap-2 text-lg font-bold">{c.name}<span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${tierOf(c) === "coaching" ? "bg-red-600/20 text-red-400" : "bg-neutral-800 text-neutral-400"}`}>{tierOf(c) === "coaching" ? "Ведение" : "Программа"}</span>{waitingChecks(db.logs[c.id]).length > 0 && <span className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white">{waitingChecks(db.logs[c.id]).length} ждут разбора</span>}</p><p className="text-sm text-neutral-500">{c.age} лет · {db.plans.filter((p) => p.clientId === c.id).length} тренировок{c.active === false && " · доступ закрыт"}</p></div>
                 <ChevronRight className="text-neutral-600" />
               </div>
             </Card>
@@ -662,6 +671,9 @@ function Trainer({ db, set }) {
             ))}
           </div>
         </Card>
+        <TierPanel key={"t" + client.id} set={set} client={client} />
+        {tierOf(client) === "coaching" && <TechReview db={db} set={set} client={client} />}
+        <GoalsPanel key={client.id} set={set} client={client} />
         <ClientCalendar db={db} set={set} client={client} />
         <WeightsPanel db={db} set={set} client={client} />
         <Card className="space-y-3">
@@ -669,6 +681,7 @@ function Trainer({ db, set }) {
           <MeasureProgress L={db.logs[client.id]} />
           <MeasureHistory L={db.logs[client.id]} />
         </Card>
+        <DeleteClient key={"d" + client.id} client={client} set={set} onDone={() => setOpen(null)} />
       </>)}
 
       {tab === "library" && <LibraryTab db={db} set={set} />}
@@ -712,10 +725,12 @@ function Trainer({ db, set }) {
             {cur.exercises.map((e) => (
               <div key={e.id} className="space-y-2 rounded-2xl bg-neutral-800 p-3">
                 <div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold">{e.name}</p><button type="button" aria-label="Убрать упражнение" onClick={() => setCur({ exercises: cur.exercises.filter((x) => x.id !== e.id) })}><Trash2 size={16} className="text-neutral-500" /></button></div>
-                <div className="flex gap-2">
-                  <InputS placeholder="Подходы, техника" value={e.comment || ""} onChange={(ev) => updEx(e.id, { comment: ev.target.value })} />
-                  <InputS className="!w-24 shrink-0" type="number" step="0.5" inputMode="decimal" placeholder="Вес, кг" value={e.w ?? ""} onChange={(ev) => updEx(e.id, { w: ev.target.value })} />
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Подходы</span><InputS type="number" inputMode="numeric" min="1" placeholder="3" value={e.sets ?? ""} onChange={(ev) => updEx(e.id, { sets: ev.target.value })} /></label>
+                  <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Повторения</span><InputS placeholder="8–10" value={e.reps ?? ""} onChange={(ev) => updEx(e.id, { reps: ev.target.value })} /></label>
+                  <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Вес, кг</span><InputS type="number" step="0.5" inputMode="decimal" placeholder="40" value={e.w ?? ""} onChange={(ev) => updEx(e.id, { w: ev.target.value })} /></label>
                 </div>
+                <InputS placeholder="Комментарий, техника" value={e.comment || ""} onChange={(ev) => updEx(e.id, { comment: ev.target.value })} />
               </div>
             ))}
             {!cur.exercises.length && <p className="text-xs text-neutral-500">В этот день пока пусто — это день отдыха.</p>}
@@ -726,9 +741,13 @@ function Trainer({ db, set }) {
               </select>
               <Input placeholder="Упражнение" value={ex.name} onChange={(e) => setEx({ ...ex, name: e.target.value })} />
               <Input placeholder="Ссылка YouTube / Vimeo" value={ex.url} onChange={(e) => setEx({ ...ex, url: e.target.value })} />
-              <Input placeholder="Комментарий (подходы, техника)" value={ex.comment} onChange={(e) => setEx({ ...ex, comment: e.target.value })} />
-              <Input type="number" placeholder="Рабочий вес клиента, кг (необязательно)" value={ex.w} onChange={(e) => setEx({ ...ex, w: e.target.value })} />
-              <Btn red={false} onClick={() => { if (ex.name) { setCur({ exercises: [...cur.exercises, { ...ex, id: uid() }] }); setEx({ name: "", url: "", comment: "", w: "", libId: "" }); } }}>Добавить упражнение в этот день</Btn>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Подходы</span><Input type="number" inputMode="numeric" min="1" placeholder="3" value={ex.sets} onChange={(e) => setEx({ ...ex, sets: e.target.value })} /></label>
+                <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Повторения</span><Input placeholder="8–10" value={ex.reps} onChange={(e) => setEx({ ...ex, reps: e.target.value })} /></label>
+                <label className="block"><span className="mb-1 block text-[11px] text-neutral-500">Вес, кг</span><Input type="number" step="0.5" inputMode="decimal" placeholder="40" value={ex.w} onChange={(e) => setEx({ ...ex, w: e.target.value })} /></label>
+              </div>
+              <Input placeholder="Комментарий (техника, отдых)" value={ex.comment} onChange={(e) => setEx({ ...ex, comment: e.target.value })} />
+              <Btn red={false} onClick={() => { if (ex.name) { setCur({ exercises: [...cur.exercises, { ...ex, id: uid() }] }); setEx({ name: "", url: "", comment: "", sets: "", reps: "", w: "", libId: "" }); } }}>Добавить упражнение в этот день</Btn>
             </div>
             <p className="text-xs text-neutral-500">Белая точка на дне — упражнения добавлены. Уже выполненные тренировки при пересоздании не удаляются.</p>
             <Btn onClick={savePlan} className="w-full">Создать программу</Btn>
@@ -790,7 +809,7 @@ function Welcome({ set }) {
 function Onboarding({ set }) {
   const [i, setI] = useState(0);
   const steps = [
-    { n: "1", t: "Заходи каждый день и отмечай привычки", img: "habits", p: "На главной — четыре привычки: вода, шаги, калории и сон.", tips: ["Выполнил цель — нажми кружок слева.", "Или нажимай «+» и добавляй понемногу в течение дня."] },
+    { n: "1", t: "Заходи каждый день и отмечай привычки", img: "habits", p: "На главной — твои ежедневные привычки и цели, которые назначил тренер.", tips: ["Выполнил цель — нажми кружок слева.", "Или нажимай «+» и добавляй понемногу в течение дня."] },
     { n: "2", t: "Тренируйся по графику и записывай вес и сложность", img: "workout", p: "Сегодняшняя тренировка — на главной, вся программа — во вкладке с гантелей.", tips: ["Впиши вес, с которым работал.", "Отметь сложность от 1 до 10.", "В конце нажми «Завершить тренировку»."] },
     { n: "3", t: "Раз в месяц вноси замеры", img: "measures", p: "Профиль → замеры: вес и обхваты. Приложение само покажет, что изменилось с начала занятий и с прошлого месяца.", tips: ["Не знаешь, как мерить? Нажми «Как делать замеры?» под формой."] },
   ];
@@ -822,7 +841,15 @@ function Onboarding({ set }) {
   );
 }
 
-const HABITS = [["water", "Вода", 2, 0.25, "л", Droplets], ["steps", "Шаги", 10000, 1000, "", Footprints], ["cal", "Калории", 2000, 250, "ккал", Flame], ["sleep", "Сон", 8, 0.5, "ч", Moon]];
+// Тариф клиента: «ведение» (с обратной связью) или «программа» (только тренировки). Без отметки = ведение.
+const tierOf = (c) => (c?.tier === "program" ? "program" : "coaching");
+const tgOf = (c) => String(c?.tg || "").trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, "");
+const waitingChecks = (L) => Object.entries(L?.checks || {}).filter(([, v]) => v && v.st === "wait");
+// Привычки: ключ, название, цель по умолчанию, шаг кнопки «+», единица, иконка
+const HABIT_BASE = [["water", "Вода", 2, 0.25, "л", Droplets], ["steps", "Шаги", 10000, 1000, "шагов", Footprints], ["cal", "Калории", 2000, 250, "ккал", Flame], ["sleep", "Сон", 8, 0.5, "ч", Moon]];
+// Привычки и цели конкретного клиента назначает тренер (client.goals = { water: { on, goal }, ... }).
+const goalOf = (c, k) => { const b = HABIT_BASE.find((x) => x[0] === k), g = c?.goals?.[k]; const n = g && Number(g.goal) > 0 ? Number(g.goal) : b[2]; return { on: g ? g.on !== false : true, goal: n }; };
+const habitsOf = (c) => HABIT_BASE.filter((b) => goalOf(c, b[0]).on).map((b) => [b[0], b[1], goalOf(c, b[0]).goal, b[3], b[4], b[5]]);
 
 function ClientApp({ db, set }) {
   const cid = db.session.clientId;
@@ -836,6 +863,7 @@ function ClientApp({ db, set }) {
   // видео и комментарий упражнения из библиотеки подтягиваются актуальные
   const rx = (x) => { const l = x.libId && (db.library || []).find((y) => y.id === x.libId); return l ? { ...x, url: l.url || x.url, comment: x.comment || l.comment } : x; };
   const ensure = (d) => { d.logs[cid] ||= { days: {}, done: {}, sets: {} }; return d.logs[cid]; };
+  const hab = habitsOf(me);
   const day = { water: 0, steps: 0, cal: 0, sleep: 0, ...(L.days[today()] || {}) };
   const bump = (k, inc, goal, toggle) => set((d) => { const l = ensure(d); const cur = l.days[today()] ||= { water: 0, steps: 0, cal: 0, sleep: 0 }, v = cur[k] || 0;
     cur[k] = toggle ? (v >= goal ? 0 : goal) : Math.min(goal, +(v + inc).toFixed(2)); });
@@ -848,11 +876,13 @@ function ClientApp({ db, set }) {
   const doneN = mp.filter((p) => L.done[p.id]).length;
   const missed = mp.filter((p) => isMissed(p, L)).length;
   const left = mp.length - doneN - missed;
-  const dayPlans = plans.filter((p) => p.date === sel);
+  const wkMon = shift(sel, -((new Date(sel + "T00:00:00").getDay() + 6) % 7)), wkSun = shift(wkMon, 6);
+  const wkFrom = new Date(wkMon + "T00:00:00"), wkTo = new Date(wkSun + "T00:00:00");
+  const dayPlans = plans.filter((p) => p.date >= wkMon && p.date <= wkSun); // тренировки выбранной недели по порядку
 
   if (run) {
     const p = plans.find((x) => x.id === run);
-    return <Workout p={p} L={L} rx={rx} W={db.weights?.[cid] || {}} back={() => setRun(null)} set={set} ensure={ensure} />;
+    return <Workout p={p} L={L} rx={rx} W={db.weights?.[cid] || {}} back={() => setRun(null)} set={set} ensure={ensure} me={me} />;
   }
 
   return (
@@ -876,7 +906,7 @@ function ClientApp({ db, set }) {
         <Card>
           <p className="mb-3 font-semibold">Привычки на сегодня</p>
           <div className="space-y-4">
-            {HABITS.map(([k, l, goal, inc, u, I]) => (
+            {hab.map(([k, l, goal, inc, u, I]) => (
               <div key={k}>
                 <div className="flex items-center gap-3">
                   <button onClick={() => bump(k, inc, goal, true)} className={`flex h-7 w-7 items-center justify-center rounded-full border ${day[k] >= goal ? "border-red-600 bg-red-600" : "border-neutral-600"}`}>{day[k] >= goal && <Check size={16} />}</button>
@@ -892,7 +922,7 @@ function ClientApp({ db, set }) {
         </Card>
         <Card>
           <p className="mb-3 font-semibold">Привычки за 7 дней</p>
-          <TriRing days={L.days} />
+          <TriRing days={L.days} habits={hab} />
         </Card>
       </>)}
 
@@ -900,31 +930,21 @@ function ClientApp({ db, set }) {
         <H>Тренировки</H>
         <div className="flex items-center justify-between text-sm">
           <button onClick={() => setSel(shift(sel, -7))} aria-label="Предыдущая неделя"><ChevronLeft size={18} /></button>
-          <span className="text-neutral-400">{new Date(sel + "T00:00:00").toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</span>
+          <span className="text-neutral-400">{wkFrom.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} — {wkTo.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}</span>
           <button onClick={() => setSel(shift(sel, 7))} aria-label="Следующая неделя"><ChevronRight size={18} /></button>
         </div>
-        <div className="flex justify-between">
-          {Array.from({ length: 7 }, (_, i) => shift(sel, i - ((new Date(sel + "T00:00:00").getDay() + 6) % 7))).map((c, i) => {
-            const ps = plans.filter((x) => x.date === c), dn = ps.length > 0 && ps.every((x) => L.done[x.id]);
-            return (
-              <button key={c} onClick={() => setSel(c)} className={`flex w-11 flex-col items-center rounded-2xl py-2 ${c === sel ? "bg-white text-black" : "text-neutral-400"}`}>
-                <span className="text-[11px]">{["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][i]}</span><span className="text-lg font-bold">{+c.slice(8)}</span>
-                <span className={`mt-1 h-1.5 w-1.5 rounded-full ${dn ? "bg-red-600" : ps.length ? "border border-red-600" : "bg-neutral-700"}`} />
-              </button>);
-          })}
-        </div>
-        {!dayPlans.length && <Card className="text-neutral-500">В этот день тренировок нет — отдых.</Card>}
-        {dayPlans.map((p) => (
+        {!dayPlans.length && <Card className="text-neutral-500">На этой неделе тренировок нет — отдых.</Card>}
+        {dayPlans.map((p, n) => (
           <Card key={p.id} className="space-y-3">
-            <div className="flex items-center justify-between"><p className="text-lg font-bold">{p.title}</p>{L.done[p.id] ? <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-600"><Check size={16} /></span> : isMissed(p, L) && <span className="text-xs text-red-400">Пропущена</span>}</div>
+            <div className="flex items-center justify-between"><div><p className="text-xs text-neutral-500">Тренировка {n + 1} · {dayLong(p.date)}</p><p className="text-lg font-bold">{p.title}</p></div>{L.done[p.id] ? <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-600"><Check size={16} /></span> : isMissed(p, L) && <span className="text-xs text-red-400">Пропущена</span>}</div>
             <div className="space-y-2">
               {p.exercises.map((x) => (
                 <div key={x.id} className="flex items-start gap-3 rounded-2xl bg-neutral-800 px-4 py-3 text-sm">
                   <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${L.sets[x.id]?.ok ? "border-red-600 bg-red-600" : "border-neutral-600"}`}>{L.sets[x.id]?.ok && <Check size={12} />}</span>
-                  <div><p className="font-medium">{x.name}</p>{rx(x).comment && <p className="text-xs text-neutral-500">{rx(x).comment}</p>}{aw(x) != null && <p className="text-xs text-red-400">Рабочий вес: {aw(x)} кг</p>}</div>
+                  <div><p className="font-medium">{x.name}</p>{scheme(x, aw(x)) && <p className="text-xs font-semibold text-red-400">{scheme(x, aw(x))}</p>}{rx(x).comment && <p className="text-xs text-neutral-500">{rx(x).comment}</p>}</div>
                 </div>))}
             </div>
-            {sel <= today() ? <Btn onClick={() => setRun(p.id)} className="w-full">{L.done[p.id] ? "Открыть снова" : "Начать тренировку"}</Btn> : <p className="text-xs text-neutral-500">Откроется в день тренировки.</p>}
+            {p.date <= today() ? <Btn onClick={() => setRun(p.id)} className="w-full">{L.done[p.id] ? "Открыть снова" : "Начать тренировку"}</Btn> : <p className="text-xs text-neutral-500">Откроется в день тренировки.</p>}
           </Card>))}
       </>)}
 
@@ -961,7 +981,7 @@ function ClientApp({ db, set }) {
   );
 }
 
-function Workout({ p, L, W, rx, back, set, ensure }) {
+function Workout({ p, L, W, rx, back, set, ensure, me }) {
   const [cur, setCur] = useState(0);
   const e = rx(p.exercises[cur]);
   const s = L.sets[e.id] || { weight: "", rpe: 0, ok: false };
@@ -981,9 +1001,10 @@ function Workout({ p, L, W, rx, back, set, ensure }) {
       {src && <p className="text-center text-xs text-neutral-500">Видео не загружается? <a href={e.url} target="_blank" rel="noreferrer" className="text-red-500 underline">Открыть в браузере</a></p>}
       <Card className="space-y-3">
         <p className="text-lg font-bold">{e.name}</p>
+        {scheme(e, aw) && <p className="text-base font-semibold text-red-400">Задание: {scheme(e, aw)}</p>}
         {e.comment && <p className="text-sm text-neutral-400">{e.comment}</p>}
-        {aw != null && <p className="text-sm font-semibold text-red-400">Рабочий вес от тренера: {aw} кг</p>}
         <Input type="number" placeholder="Рабочий вес, кг" value={s.weight} onChange={(ev) => upd({ weight: ev.target.value })} />
+        <TechCheck me={me} p={p} e={e} L={L} set={set} ensure={ensure} />
         <div><p className="mb-2 text-xs text-neutral-500">Сложность (1–10, 8 и выше — «Тяжело»)</p>
           <div className="flex flex-wrap gap-2">{Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
             <button key={n} onClick={() => upd({ rpe: n })} className={`h-9 w-9 rounded-full text-sm ${s.rpe === n ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-400"}`}>{n}</button>))}</div></div>
@@ -1003,11 +1024,11 @@ function Workout({ p, L, W, rx, back, set, ensure }) {
 }
 
 /* Кольцо делится на части по числу привычек (вода / шаги / калории / сон). В каждой части 7 сегментов = последние 7 дней, от старых к новым по часовой стрелке. */
-function TriRing({ days }) {
-  const N = HABITS.length, span = 360 / N, pad = 3, w = (span - 2 * pad) / 7;
+function TriRing({ days, habits }) {
+  const N = habits.length || 1, span = 360 / N, pad = 3, w = (span - 2 * pad) / 7;
   const pt = (a, r) => [100 + r * Math.cos((a * Math.PI) / 180), 100 + r * Math.sin((a * Math.PI) / 180)];
   const seg = (a1, a2) => { const [x1, y1] = pt(a1, 74), [x2, y2] = pt(a2, 74); return `M${x1} ${y1} A74 74 0 0 1 ${x2} ${y2}`; };
-  const rows = HABITS.map(([k, l, goal, , , I]) => {
+  const rows = habits.map(([k, l, goal, , , I]) => {
     const hits = Array.from({ length: 7 }, (_, j) => (days[dayStr(j - 6)]?.[k] || 0) >= goal);
     return { k, l, I, hits, n: hits.filter(Boolean).length };
   });
@@ -1073,8 +1094,8 @@ function MeasureProgress({ L }) {
   const rows = MEASURE_FIELDS.map(([k, l, u]) => {
     const c = mnum(m[last][k]); if (c == null) return null;
     const ser = ks.filter((x) => mnum(m[x][k]) != null), first = ser[0], prev = ser.length > 1 ? ser.at(-2) : null, lines = [];
-    if (first !== last) lines.push(`${delta(c, mnum(m[first][k]), u)} с начала занятий`);
-    if (prev) lines.push(`${delta(c, mnum(m[prev][k]), u)} ${prev === pm(last, 1) ? "с прошлого месяца" : "с замера за " + monLabel(prev).toLowerCase()}`);
+    if (k !== "height" && first !== last) lines.push(`${delta(c, mnum(m[first][k]), u)} с начала занятий`);
+    if (k !== "height" && prev) lines.push(`${delta(c, mnum(m[prev][k]), u)} ${prev === pm(last, 1) ? "с прошлого месяца" : "с замера за " + monLabel(prev).toLowerCase()}`);
     return { k, l, u, c, lines };
   }).filter(Boolean);
   return (
@@ -1110,7 +1131,8 @@ function MeasureHistory({ L }) {
 
 function MeasureForm({ L, save, onGuide }) {
   const cur = L.measures?.[ym(today())] || {};
-  const [f, setF] = useState(() => Object.fromEntries(MEASURE_FIELDS.map(([k]) => [k, cur[k] ?? ""])));
+  const prevH = Object.keys(L.measures || {}).sort().reverse().map((x) => L.measures[x].height).find((h) => mnum(h) != null); // рост переносится из прошлого замера
+  const [f, setF] = useState(() => Object.fromEntries(MEASURE_FIELDS.map(([k]) => [k, cur[k] ?? (k === "height" ? prevH ?? "" : "")])));
   const [ok, setOk] = useState(false);
   const go = () => {
     const clean = Object.fromEntries(Object.entries(f).map(([k, v]) => [k, mnum(v)]).filter(([, v]) => v != null && v > 0));
@@ -1121,7 +1143,7 @@ function MeasureForm({ L, save, onGuide }) {
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-x-2 gap-y-3">
         {MEASURE_FIELDS.map(([k, l, u]) => (
-          <label key={k} className={`block ${k === "weight" ? "col-span-2" : ""}`}>
+          <label key={k} className="block">
             <span className="mb-1 block text-xs text-neutral-500">{l}, {u}</span>
             <Input type="number" inputMode="decimal" step="0.1" min="0" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />
           </label>))}
@@ -1566,8 +1588,107 @@ function AccessTab({ db, set }) {
   );
 }
 
+function DeleteClient({ client, set, onDone }) {
+  const [ask, setAsk] = useState(false);
+  const del = () => { set((d) => { d.clients = d.clients.filter((c) => c.id !== client.id); d.plans = d.plans.filter((p) => p.clientId !== client.id); delete d.logs[client.id]; if (d.weights) delete d.weights[client.id]; }); onDone(); };
+  return ask ? (
+    <Card className="space-y-2 border-red-600/40">
+      <p className="text-sm">Удалить клиента «{client.name}» навсегда? Пропадут его программа, замеры, веса и история. Его ссылка перестанет работать. Отменить нельзя.</p>
+      <div className="flex gap-2"><Btn onClick={del}>Да, удалить</Btn><Btn red={false} onClick={() => setAsk(false)}>Отмена</Btn></div>
+    </Card>
+  ) : <button type="button" onClick={() => setAsk(true)} className="w-full py-2 text-sm text-red-400 underline">Удалить клиента</button>;
+}
+
+function TierPanel({ set, client }) {
+  const [tg, setTg] = useState(tgOf(client)), [saved, setSaved] = useState(false), t = tierOf(client);
+  const setTier = (v) => set((d) => { d.clients.find((y) => y.id === client.id).tier = v; });
+  const saveTg = () => { const v = tg.trim().replace(/^(https?:\/\/)?(t\.me\/)?@?/i, ""); set((d) => { d.clients.forEach((c) => { c.tg = v; }); }); setTg(v); setSaved(true); };
+  return (
+    <Card className="space-y-3">
+      <div><p className="font-semibold">Тариф клиента</p><p className="text-xs text-neutral-500">«Ведение» — с обратной связью по технике. «Программа» — только тренировки.</p></div>
+      <div className="grid grid-cols-2 gap-2">{[["coaching", "Ведение"], ["program", "Программа"]].map(([k, l]) => <button key={k} type="button" onClick={() => setTier(k)} className={`rounded-2xl py-3 text-sm font-semibold ${t === k ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-300"}`}>{l}</button>)}</div>
+      {t === "coaching" && (
+        <div className="space-y-2">
+          <p className="text-xs text-neutral-500">Ваш Telegram — клиенты на «Ведении» отправят видео техники сюда (один ник для всех клиентов)</p>
+          <div className="flex gap-2"><Input placeholder="например, anton_trainer" value={tg} onChange={(e) => { setTg(e.target.value); setSaved(false); }} /><Btn onClick={saveTg}>{saved ? "✓" : "Сохранить"}</Btn></div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function TechReview({ db, set, client }) {
+  const L = db.logs[client.id] || {}, all = Object.entries(L.checks || {}).filter(([, v]) => v).sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+  const [txt, setTxt] = useState({});
+  const wait = all.filter(([, v]) => v.st === "wait"), done = all.filter(([, v]) => v.st !== "wait").slice(0, 3);
+  const reply = (id) => { const t = (txt[id] || "").trim(); if (!t) return; set((d) => { const c = d.logs[client.id]?.checks?.[id]; if (c) { c.reply = t; c.st = "done"; c.rts = Date.now(); } }); };
+  return (
+    <Card className="space-y-3">
+      <div><p className="flex items-center gap-2 font-semibold"><Video size={16} />Разбор техники {wait.length > 0 && <span className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] text-white">{wait.length}</span>}</p><p className="text-xs text-neutral-500">Клиент отправил видео вам в Telegram и отметил упражнение здесь. Напишите разбор — он покажется в этом упражнении у клиента.</p></div>
+      {wait.length === 0 && <p className="text-sm text-neutral-500">Сейчас никто не ждёт разбора.</p>}
+      {wait.map(([id, v]) => (
+        <div key={id} className="space-y-2 rounded-2xl bg-neutral-800 p-3">
+          <p className="text-sm font-semibold">{v.name} <span className="text-xs font-normal text-neutral-500">· {v.date && dayLong(v.date)}</span></p>
+          <textarea rows={3} value={txt[id] || ""} onChange={(e) => setTxt({ ...txt, [id]: e.target.value })} placeholder="Что исправить: колени, спина, амплитуда…" className="w-full rounded-xl bg-neutral-900 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-500" />
+          <Btn onClick={() => reply(id)}>Отправить разбор</Btn>
+        </div>
+      ))}
+      {done.length > 0 && <div className="space-y-1 border-t border-white/10 pt-2"><p className="text-xs text-neutral-500">Последние разборы</p>{done.map(([id, v]) => <p key={id} className="text-xs text-neutral-400"><span className="text-neutral-300">{v.name}:</span> {v.reply}</p>)}</div>}
+    </Card>
+  );
+}
+
+function TechCheck({ me, p, e, L, set, ensure }) {
+  const c = L.checks?.[e.id], tg = tgOf(me), [msg, setMsg] = useState("");
+  if (tierOf(me) !== "coaching") return null;
+  const send = () => {
+    const text = `${me.name} · ${e.name}${scheme(e) ? " · " + scheme(e) : ""} · тренировка ${p.date.split("-").reverse().join(".")} — проверь технику`;
+    try { navigator.clipboard?.writeText(text); } catch {}
+    set((d) => { const l = ensure(d); (l.checks ||= {})[e.id] = { name: e.name, planId: p.id, date: p.date, st: "wait", ts: Date.now() }; });
+    setMsg(tg ? "Текст скопирован. Вставьте его в чат и приложите видео." : "Тренер отмечен. Отправьте ему видео в Telegram.");
+    if (tg) window.open(`https://t.me/${tg}`, "_blank", "noopener");
+  };
+  return (
+    <div className="space-y-2 rounded-2xl bg-neutral-800 p-3">
+      {c?.st === "done" && c.reply && <div><p className="text-xs font-semibold text-red-400">Разбор тренера</p><p className="whitespace-pre-wrap text-sm">{c.reply}</p></div>}
+      {c?.st === "wait" && <p className="text-sm text-neutral-300">Видео отправлено — ждёт разбора тренера</p>}
+      <button type="button" onClick={send} className="flex w-full items-center justify-center gap-2 rounded-full bg-neutral-700 py-2.5 text-sm font-semibold text-neutral-100"><Video size={16} />{c ? "Отправить новое видео тренеру" : "Отправить видео тренеру"}</button>
+      {msg && <p className="text-xs text-neutral-400">{msg}</p>}
+    </div>
+  );
+}
+
+function GoalsPanel({ set, client }) {
+  const init = () => Object.fromEntries(HABIT_BASE.map(([k]) => { const g = goalOf(client, k); return [k, { on: g.on, goal: String(g.goal) }]; }));
+  const [f, setF] = useState(init), [saved, setSaved] = useState(false);
+  const ch = (k, p) => { setSaved(false); setF((x) => ({ ...x, [k]: { ...x[k], ...p } })); };
+  const save = () => {
+    const goals = Object.fromEntries(HABIT_BASE.map(([k, , def]) => { const n = parseFloat(String(f[k].goal).replace(",", ".")); return [k, { on: f[k].on, goal: n > 0 ? n : def }]; }));
+    set((d) => { d.clients.find((y) => y.id === client.id).goals = goals; });
+    setF(Object.fromEntries(Object.entries(goals).map(([k, v]) => [k, { on: v.on, goal: String(v.goal) }])));
+    setSaved(true);
+  };
+  return (
+    <Card className="space-y-3">
+      <div><p className="font-semibold">Привычки и цели клиента</p><p className="text-xs text-neutral-500">Включи нужные привычки и задай дневную цель — клиент увидит их на главной.</p></div>
+      {HABIT_BASE.map(([k, l, , , u, I]) => (
+        <div key={k} className={`flex items-center gap-3 rounded-2xl bg-neutral-800 p-3 ${f[k].on ? "" : "opacity-60"}`}>
+          <button type="button" role="switch" aria-checked={f[k].on} aria-label={`Привычка «${l}»`} onClick={() => ch(k, { on: !f[k].on })} className={`relative h-6 w-11 shrink-0 rounded-full transition ${f[k].on ? "bg-red-600" : "bg-neutral-600"}`}>
+            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${f[k].on ? "left-[22px]" : "left-0.5"}`} />
+          </button>
+          <I size={18} className="shrink-0 text-red-500" />
+          <span className="flex-1 text-sm">{l}</span>
+          <input type="number" inputMode="decimal" min="0" step="any" disabled={!f[k].on} value={f[k].goal} onChange={(e) => ch(k, { goal: e.target.value })} aria-label={`Цель: ${l}`} className="w-24 rounded-xl bg-neutral-900 px-3 py-2 text-right text-sm outline-none focus:ring-1 focus:ring-red-500" />
+          <span className="w-10 text-xs text-neutral-500">{u}</span>
+        </div>
+      ))}
+      <Btn onClick={save}>{saved ? "Сохранено ✓" : "Сохранить"}</Btn>
+    </Card>
+  );
+}
+
 function ClientCalendar({ db, set, client }) {
-  const L = db.logs[client.id] || {}, [sel, setSel] = useState(null);
+  const L = db.logs[client.id] || {}, [sel, setSel] = useState(null), [askDel, setAskDel] = useState(null);
   const plans = db.plans.filter((p) => p.clientId === client.id).sort((a, b) => a.date.localeCompare(b.date));
   const doneN = plans.filter((p) => L.done?.[p.id]).length, missN = plans.filter((p) => isMissed(p, L)).length, left = plans.length - doneN - missN;
   const dayPlans = sel ? plans.filter((p) => p.date === sel) : [];
@@ -1578,6 +1699,12 @@ function ClientCalendar({ db, set, client }) {
     if (st === "done") l.done[p.id] = p.date;
     if (st === "missed") l.missed[p.id] = true;
   });
+  const dropPlans = (all) => set((d) => {
+    const ids = new Set(d.plans.filter((p) => p.clientId === client.id && (all || !d.logs[client.id]?.done?.[p.id])).map((p) => p.id));
+    d.plans = d.plans.filter((p) => !ids.has(p.id));
+    const l = d.logs[client.id]; if (l && all) { ids.forEach((id) => { delete l.done?.[id]; delete l.missed?.[id]; }); }
+  });
+  const undone = plans.filter((p) => !L.done?.[p.id]).length;
   return (
     <Card className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-1"><p className="font-semibold">Тренировки</p><p className="text-xs text-neutral-400">Выполнено {doneN} · пропущено {missN} · впереди {left}</p></div>
@@ -1603,6 +1730,17 @@ function ClientCalendar({ db, set, client }) {
         </div>
       )}
       {!sel && plans.length > 0 && <p className="text-xs text-neutral-500">Нажмите на день с тренировкой, чтобы отметить, выполнена она или пропущена.</p>}
+      {plans.length > 0 && (askDel ? (
+        <div className="space-y-2 rounded-2xl border border-red-600/40 p-3">
+          <p className="text-sm">{askDel === "all" ? `Удалить всю программу (${plans.length} трен.), включая выполненные? История выполнения пропадёт.` : `Удалить невыполненные тренировки (${undone})? Выполненные останутся в истории.`}</p>
+          <div className="flex gap-2"><Btn onClick={() => { dropPlans(askDel === "all"); setSel(null); setAskDel(null); }}>Да, удалить</Btn><Btn red={false} onClick={() => setAskDel(null)}>Отмена</Btn></div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+          {undone > 0 && undone < plans.length && <button type="button" onClick={() => setAskDel("undone")} className="text-red-400 underline">Удалить невыполненные</button>}
+          <button type="button" onClick={() => setAskDel("all")} className="text-red-400 underline">Удалить всю программу</button>
+        </div>
+      ))}
     </Card>
   );
 }
